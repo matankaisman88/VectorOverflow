@@ -98,14 +98,41 @@ class HybridSearchService:
         self._metadatas: list[dict[str, Any]] = []
         self._documents: list[str] = []
         self._id_to_index: dict[str, int] = {}
+        self._corpus_page_size: int = 1000
+
+    def _iter_collection_rows(self) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+        """
+        Read collection rows in pages to avoid SQLite variable limits on large corpora.
+        """
+        total = int(self.collection.count())
+        if total <= 0:
+            return [], [], []
+
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+
+        for offset in range(0, total, self._corpus_page_size):
+            page = self.collection.get(
+                limit=self._corpus_page_size,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+            page_ids = list(page.get("ids") or [])
+            page_docs = list(page.get("documents") or [])
+            page_metas = list(page.get("metadatas") or [])
+            if len(page_ids) != len(page_docs) or len(page_ids) != len(page_metas):
+                raise RuntimeError("Chroma paged get() returned mismatched ids/documents/metadatas")
+            ids.extend(page_ids)
+            documents.extend(page_docs)
+            metadatas.extend(page_metas)
+
+        return ids, documents, metadatas
 
     def _ensure_corpus(self, logger: logging.Logger | logging.LoggerAdapter | None) -> None:
         if self._bm25 is not None:
             return
-        data = self.collection.get(include=["documents", "metadatas"])
-        self._ids = list(data.get("ids") or [])
-        self._documents = list(data.get("documents") or [])
-        self._metadatas = list(data.get("metadatas") or [])
+        self._ids, self._documents, self._metadatas = self._iter_collection_rows()
         if len(self._ids) != len(self._documents) or len(self._ids) != len(self._metadatas):
             raise RuntimeError("Chroma get() returned mismatched ids/documents/metadatas lengths")
         self._id_to_index = {doc_id: idx for idx, doc_id in enumerate(self._ids)}
