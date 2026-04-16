@@ -11,7 +11,11 @@ class Settings(BaseSettings):
 
     embedding_backend: Literal["openai", "sentence_transformers"] = "sentence_transformers"
     openai_api_key: str | None = None
+    openai_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    hybrid_alpha: float = 0.5
+    rrf_k: int = 60
     sentence_transformer_model: str = "all-MiniLM-L6-v2"
     chroma_persist_dir: Path = Path("./data/chroma")
     chroma_collection_prefix: str = "posts"

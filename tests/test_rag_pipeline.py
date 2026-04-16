@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 
 import so_rag.indexer as indexer_module
 from so_rag.config import Settings
+from so_rag.hybrid_search import HybridSearchService, metadata_matches_stackoverflow_tags
 from so_rag.ingestion import parse_posts_xml
 from so_rag.indexer import ChromaIndexer
 from so_rag.logging_setup import get_run_logger
 from so_rag.models import Status
+from so_rag.orchestrator import run_rag_pipeline
 from so_rag.search import SearchService
 
 
@@ -109,4 +112,127 @@ def test_search_metadata_contains_url_and_id(tmp_path: Path, monkeypatch) -> Non
     result = SearchService(settings).search("pandas sum", top_k=1)[0]
     assert isinstance(result.id, int)
     assert result.stackoverflow_url == f"https://stackoverflow.com/questions/{result.id}"
+
+
+def test_metadata_matches_stackoverflow_tags() -> None:
+    assert metadata_matches_stackoverflow_tags("<python><list>", ["python"])
+    assert not metadata_matches_stackoverflow_tags("<java>", ["python"])
+
+
+def test_hybrid_rrf_no_duplicate_post_ids(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    settings = build_settings(tmp_path)
+    payloads = fixture_payloads("tests/fixtures/posts.xml")
+    logger = get_run_logger("run-hybrid-dedup", settings.log_dir)
+    ChromaIndexer(settings).index_payloads(payloads, "run-hybrid-dedup", logger)
+    hybrid = HybridSearchService(settings)
+    hits = hybrid.search("python sort list", top_k=20, logger=logger)
+    assert hits
+    assert len(hits) == len({h.id for h in hits})
+
+
+def test_hybrid_python_tag_filter_excludes_java_post(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    settings = build_settings(tmp_path)
+    payloads = fixture_payloads("tests/fixtures/posts.xml")
+    logger = get_run_logger("run-tag-filter", settings.log_dir)
+    ChromaIndexer(settings).index_payloads(payloads, "run-tag-filter", logger)
+    hybrid = HybridSearchService(settings)
+    hits = hybrid.search(
+        "anything",
+        rewritten_query="list sorting",
+        tag_filters=["python"],
+        top_k=20,
+        logger=logger,
+    )
+    ids = {h.id for h in hits}
+    assert 4 not in ids
+    for h in hits:
+        assert "<python>" in (h.tags or "").lower()
+
+
+class _FakeCrossEncoder:
+    def __init__(self, *_a, **_kw) -> None:
+        pass
+
+    def predict(self, pairs, **_kw):  # noqa: ANN001
+        return [float(len(pairs) - i) for i in range(len(pairs))]
+
+
+def _openai_client_happy_path() -> MagicMock:
+    client = MagicMock()
+
+    def _create(**kwargs):  # noqa: ANN001
+        resp = MagicMock()
+        if kwargs.get("response_format"):
+            payload = {
+                "technical_tags": ["python"],
+                "rewritten_search_query": "python list sort",
+            }
+            resp.choices = [MagicMock(message=MagicMock(content=json.dumps(payload)))]
+        else:
+            resp.choices = [MagicMock(message=MagicMock(content="Use list.sort() or sorted()."))]
+        return resp
+
+    client.chat.completions.create = _create
+    return client
+
+
+def test_rag_pipeline_happy_path(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    monkeypatch.setattr("so_rag.reranker.CrossEncoder", _FakeCrossEncoder)
+    settings = build_settings(tmp_path)
+    settings.openai_api_key = "test-key"
+    payloads = fixture_payloads("tests/fixtures/posts.xml")
+    logger = get_run_logger("run-rag-happy", settings.log_dir)
+    ChromaIndexer(settings).index_payloads(payloads, "run-rag-happy", logger)
+    result = run_rag_pipeline(
+        settings,
+        "Python list sorting",
+        "run-rag-happy",
+        logger,
+        openai_client=_openai_client_happy_path(),
+    )
+    assert "list" in result.answer.lower() or "sort" in result.answer.lower()
+    assert result.tags_extracted == ["python"]
+    assert result.sources
+    assert result.top_1_score is not None
+    assert "hybrid_ms" in result.latency_ms
+    assert result.context_source_ids
+
+
+def test_rag_pipeline_llm_answer_fallback(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    monkeypatch.setattr("so_rag.reranker.CrossEncoder", _FakeCrossEncoder)
+    settings = build_settings(tmp_path)
+    settings.openai_api_key = "test-key"
+    payloads = fixture_payloads("tests/fixtures/posts.xml")
+    logger = get_run_logger("run-rag-fallback", settings.log_dir)
+    ChromaIndexer(settings).index_payloads(payloads, "run-rag-fallback", logger)
+
+    client = MagicMock()
+
+    def _create(**kwargs):  # noqa: ANN001
+        if kwargs.get("response_format"):
+            payload = {
+                "technical_tags": ["python"],
+                "rewritten_search_query": "python list sort",
+            }
+            r = MagicMock()
+            r.choices = [MagicMock(message=MagicMock(content=json.dumps(payload)))]
+            return r
+        raise RuntimeError("LLM provider unavailable")
+
+    client.chat.completions.create = _create
+
+    result = run_rag_pipeline(
+        settings,
+        "Python list sorting",
+        "run-rag-fallback",
+        logger,
+        openai_client=client,
+    )
+    assert "Warning" in result.answer or "warning" in result.answer.lower()
+    assert "stackoverflow.com/questions" in result.answer
+    assert result.llm_error is not None
 
