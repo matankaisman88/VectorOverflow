@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<posts>
+  <row Id="1" Title="Python list sort" Body="&lt;p&gt;How to sort list&lt;/p&gt;" Tags="&lt;python&gt;&lt;list&gt;" />
+  <row Id="2" Title="Pandas groupby sum" Body="&lt;p&gt;Need groupby sum&lt;/p&gt;" Tags="&lt;python&gt;&lt;pandas&gt;" />
+  <row Id="3" Title="SQL join basics" Body="&lt;p&gt;How joins work&lt;/p&gt;" Tags="&lt;sql&gt;" />
+  <row Id="4" Title="Java null pointer" Body="&lt;p&gt;NPE reason&lt;/p&gt;" Tags="&lt;java&gt;" />
+  <row Id="5" Title="JavaScript async await" Body="&lt;p&gt;Async examples&lt;/p&gt;" Tags="&lt;javascript&gt;" />
+  <row Id="6" Title="Docker compose up" Body="&lt;p&gt;Compose startup&lt;/p&gt;" Tags="&lt;docker&gt;" />
+  <row Id="7" Title="Kubernetes pod crashloop" Body="&lt;p&gt;Pod restarting&lt;/p&gt;" Tags="&lt;kubernetes&gt;" />
+  <row Id="8" Title="Regex capture group" Body="&lt;p&gt;Capture text&lt;/p&gt;" Tags="&lt;regex&gt;" />
+  <row Id="9" Title="FastAPI dependency injection" Body="&lt;p&gt;DI pattern&lt;/p&gt;" Tags="&lt;python&gt;&lt;fastapi&gt;" />
+  <row Id="10" Title="Machine learning train test split" Body="&lt;p&gt;Use sklearn split&lt;/p&gt;" Tags="&lt;python&gt;&lt;ml&gt;" />
+</posts>

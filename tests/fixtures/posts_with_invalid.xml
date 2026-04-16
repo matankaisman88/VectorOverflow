@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<posts>
+  <row Id="1" Title="Python list sort" Body="&lt;p&gt;How to sort list&lt;/p&gt;" Tags="&lt;python&gt;&lt;list&gt;" />
+  <row Id="2" Title="Invalid empty body" Body="" Tags="&lt;python&gt;" />
+</posts>

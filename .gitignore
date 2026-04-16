@@ -1,0 +1,9 @@
+.pytest_cache/
+__pycache__/
+*.pyc
+
+data/
+logs/
+rejected_records.jsonl
+
+so_rag.egg-info/
