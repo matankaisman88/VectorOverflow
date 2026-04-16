@@ -159,6 +159,14 @@ class _FakeCrossEncoder:
         return [float(len(pairs) - i) for i in range(len(pairs))]
 
 
+class _FakeCrossEncoderLowScores:
+    def __init__(self, *_a, **_kw) -> None:
+        pass
+
+    def predict(self, pairs, **_kw):  # noqa: ANN001
+        return [-10.0 for _ in pairs]
+
+
 def _openai_client_happy_path() -> MagicMock:
     client = MagicMock()
 
@@ -235,4 +243,27 @@ def test_rag_pipeline_llm_answer_fallback(tmp_path: Path, monkeypatch) -> None: 
     assert "Warning" in result.answer or "warning" in result.answer.lower()
     assert "stackoverflow.com/questions" in result.answer
     assert result.llm_error is not None
+
+
+def test_rag_pipeline_threshold_removes_irrelevant_sources(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    monkeypatch.setattr("so_rag.reranker.CrossEncoder", _FakeCrossEncoderLowScores)
+    settings = build_settings(tmp_path)
+    settings.openai_api_key = "test-key"
+    settings.rerank_threshold = -2.0
+    payloads = fixture_payloads("tests/fixtures/posts.xml")
+    logger = get_run_logger("run-rag-threshold", settings.log_dir)
+    ChromaIndexer(settings).index_payloads(payloads, "run-rag-threshold", logger)
+    client = _openai_client_happy_path()
+
+    result = run_rag_pipeline(
+        settings,
+        "Python list sorting",
+        "run-rag-threshold",
+        logger,
+        openai_client=client,
+    )
+
+    assert result.sources == []
+    assert result.answer == "No relevant information found in the 2013 dataset."
 

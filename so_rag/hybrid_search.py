@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from math import ceil
 from typing import Any
 
 from rank_bm25 import BM25Okapi
@@ -15,18 +16,44 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.split(r"\W+", text.lower()) if t]
 
 
+def _normalize_tag(tag: str) -> str:
+    value = tag.strip().lower()
+    if not value:
+        return value
+    # Lightweight singularization to avoid strict plural mismatches.
+    if value.endswith("ies") and len(value) > 3:
+        return value[:-3] + "y"
+    if value.endswith("sses") and len(value) > 4:
+        return value[:-2]
+    if value.endswith("s") and not value.endswith("ss") and len(value) > 3:
+        return value[:-1]
+    return value
+
+
+def _tag_variants(tag: str) -> set[str]:
+    raw = tag.strip().lower()
+    normalized = _normalize_tag(raw)
+    variants = {v for v in (raw, normalized) if v}
+    return variants
+
+
+def _extract_stackoverflow_tags(tags_str: str) -> set[str]:
+    parsed = {m.strip().lower() for m in re.findall(r"<([^>]+)>", tags_str or "") if m.strip()}
+    normalized = {_normalize_tag(t) for t in parsed if t}
+    return parsed | normalized
+
+
 def metadata_matches_stackoverflow_tags(tags_str: str, required_tags: list[str]) -> bool:
-    """Hard filter: each required tag must appear as `<tag>` in SO-style tag string."""
+    """Soft filter: pass when at least one (or majority) requested tags match."""
     if not required_tags:
         return True
-    lowered = (tags_str or "").lower()
-    for raw in required_tags:
-        tag = raw.strip().lower()
-        if not tag:
-            continue
-        if f"<{tag}>" not in lowered:
-            return False
-    return True
+    post_tags = _extract_stackoverflow_tags(tags_str)
+    required_sets = [_tag_variants(raw) for raw in required_tags if raw.strip()]
+    if not required_sets:
+        return True
+    matched = sum(1 for variants in required_sets if variants & post_tags)
+    needed = max(1, ceil(len(required_sets) / 2))
+    return matched >= needed
 
 
 def reciprocal_rank_fusion_weighted(
@@ -107,12 +134,15 @@ class HybridSearchService:
     def _chroma_where_for_tags(self, tag_filters: list[str]) -> dict[str, Any] | None:
         if not tag_filters:
             return None
-        clauses = [{"tags": {"$contains": f"<{t.strip().lower()}>"}} for t in tag_filters if t.strip()]
+        clauses: list[dict[str, Any]] = []
+        for tag in tag_filters:
+            for variant in _tag_variants(tag):
+                clauses.append({"tags": {"$contains": f"<{variant}>"}})
         if not clauses:
             return None
         if len(clauses) == 1:
             return clauses[0]
-        return {"$and": clauses}
+        return {"$or": clauses}
 
     def search(
         self,
@@ -122,6 +152,32 @@ class HybridSearchService:
         tag_filters: list[str] | None = None,
         top_k: int = 30,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
+    ) -> list[HybridSearchHit]:
+        def _run_search(active_filters: list[str]) -> list[HybridSearchHit]:
+            return self._search_impl(
+                query=query,
+                rewritten_query=rewritten_query,
+                tag_filters=active_filters,
+                top_k=top_k,
+                logger=logger,
+            )
+
+        filters = [t.strip() for t in (tag_filters or []) if t.strip()]
+        hits = _run_search(filters)
+        if hits or not filters:
+            return hits
+        if logger:
+            logger.info("hybrid_tag_filter_fallback_no_results tags=%s", filters)
+        return _run_search([])
+
+    def _search_impl(
+        self,
+        *,
+        query: str,
+        rewritten_query: str | None,
+        tag_filters: list[str] | None,
+        top_k: int,
+        logger: logging.Logger | logging.LoggerAdapter | None,
     ) -> list[HybridSearchHit]:
         self._ensure_corpus(logger)
         search_text = (rewritten_query or query).strip()

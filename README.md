@@ -50,6 +50,7 @@ RAG settings:
 - `OPENAI_API_KEY` (required if `EMBEDDING_BACKEND=openai`)
 - `OPENAI_MODEL` (default: `gpt-4o`)
 - `RERANK_MODEL` (default: `cross-encoder/ms-marco-MiniLM-L-6-v2`)
+- `RERANK_THRESHOLD` (default: `-2.0`; sources at or below this rerank score are dropped)
 - `HYBRID_ALPHA` (default: `0.5`, vector-vs-lexical fusion weight)
 - `RRF_K` (default: `60`)
 - `CHROMA_PERSIST_DIR` (default: `./data/chroma`)

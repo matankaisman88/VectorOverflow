@@ -84,6 +84,17 @@ def run_rag_pipeline(
     ranker = reranker or CrossEncoderReranker(settings)
     t2 = time.perf_counter()
     reranked = ranker.rerank(rewritten or user_query, hybrid_hits, top_k=rerank_top_k)
+    pre_threshold_count = len(reranked)
+    rerank_threshold = float(settings.rerank_threshold)
+    reranked = [s for s in reranked if float(s.rerank_score) > rerank_threshold]
+    removed_by_threshold = pre_threshold_count - len(reranked)
+    logger.info(
+        "rerank_threshold_applied run_id=%s threshold=%s removed=%s remaining=%s",
+        run_id,
+        rerank_threshold,
+        removed_by_threshold,
+        len(reranked),
+    )
     latency_ms["rerank_ms"] = round((time.perf_counter() - t2) * 1000, 3)
 
     top_1 = float(reranked[0].rerank_score) if reranked else None
@@ -114,7 +125,7 @@ def run_rag_pipeline(
             "Warning: OpenAI is not configured or unavailable; showing ranked links only.",
         )
     else:
-        answer = "No relevant posts were retrieved for this query."
+        answer = "No relevant information found in the 2013 dataset."
     latency_ms["generation_ms"] = round((time.perf_counter() - t3) * 1000, 3)
     latency_ms["total_ms"] = round((time.perf_counter() - t_all) * 1000, 3)
 
@@ -124,6 +135,8 @@ def run_rag_pipeline(
         "tags_extracted": tags,
         "top_1_score": top_1,
         "context_source_ids": context_ids,
+        "rerank_threshold": rerank_threshold,
+        "sources_removed_by_threshold": removed_by_threshold,
     }
     logger.info("rag_observability %s", json.dumps(log_payload, ensure_ascii=True))
 
