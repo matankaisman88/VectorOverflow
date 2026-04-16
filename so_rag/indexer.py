@@ -53,54 +53,101 @@ class ChromaIndexer:
         for i in range(0, len(posts), size):
             yield posts[i : i + size]
 
+    def _process_batch(
+        self,
+        batch: list[Post],
+        run_id: str,
+        logger,
+        indexed_so_far: int,
+    ) -> tuple[int, int, Status, bool]:
+        """
+        Process a single validated batch.
+
+        Returns:
+            indexed_delta, rejected_delta, status_after_batch, should_stop
+        """
+        if not batch:
+            return 0, 0, Status.SUCCESS, False
+
+        ids = [str(p.id) for p in batch]
+        try:
+            existing = self.collection.get(ids=ids, include=[])
+            existing_ids = set(existing.get("ids", []))
+            missing_posts = [p for p in batch if str(p.id) not in existing_ids]
+            if not missing_posts:
+                return 0, 0, Status.SUCCESS, False
+
+            docs = [self._to_document(p) for p in missing_posts]
+            embeddings = self.embedding_service.embed_texts(docs)
+            self.collection.upsert(
+                ids=[str(p.id) for p in missing_posts],
+                documents=docs,
+                embeddings=embeddings,
+                metadatas=[{"id": p.id, "title": p.title, "tags": p.tags} for p in missing_posts],
+            )
+            return len(missing_posts), 0, Status.SUCCESS, False
+        except Exception as exc:
+            status = Status.PARTIAL if indexed_so_far > 0 else Status.FAILURE
+            for post in batch:
+                write_dlq_record(
+                    self.settings.dlq_path,
+                    post.model_dump(),
+                    str(exc),
+                    "embed",
+                    run_id,
+                )
+            logger.exception("Failed processing embedding batch")
+            return 0, len(batch), status, status == Status.FAILURE
+
     def index_payloads(self, payloads: Iterable[dict], run_id: str, logger) -> IndexingSummary:
         start = time.perf_counter()
         processed = 0
         indexed = 0
         rejected = 0
         status = Status.SUCCESS
-        valid_posts: list[Post] = []
+        batch_buffer: list[Post] = []
+        stop_processing = False
 
         for payload in payloads:
             processed += 1
+            if processed % 1000 == 0:
+                logger.info("indexing_progress run_id=%s processed=%s", run_id, processed)
+
             post = valid_post_from_payload(payload, run_id, self.settings.dlq_path)
             if post is None:
                 rejected += 1
                 status = Status.PARTIAL
                 continue
-            valid_posts.append(post)
-
-        for batch in self._chunks(valid_posts, self.settings.batch_size):
-            ids = [str(p.id) for p in batch]
-            try:
-                existing = self.collection.get(ids=ids, include=[])
-                existing_ids = set(existing.get("ids", []))
-                missing_posts = [p for p in batch if str(p.id) not in existing_ids]
-                if not missing_posts:
-                    continue
-                docs = [self._to_document(p) for p in missing_posts]
-                embeddings = self.embedding_service.embed_texts(docs)
-                self.collection.upsert(
-                    ids=[str(p.id) for p in missing_posts],
-                    documents=docs,
-                    embeddings=embeddings,
-                    metadatas=[{"id": p.id, "title": p.title, "tags": p.tags} for p in missing_posts],
+            batch_buffer.append(post)
+            if len(batch_buffer) >= self.settings.batch_size:
+                indexed_delta, rejected_delta, batch_status, should_stop = self._process_batch(
+                    batch_buffer,
+                    run_id,
+                    logger,
+                    indexed_so_far=indexed,
                 )
-                indexed += len(missing_posts)
-            except Exception as exc:
-                status = Status.PARTIAL if indexed > 0 else Status.FAILURE
-                for p in batch:
-                    write_dlq_record(
-                        self.settings.dlq_path,
-                        p.model_dump(),
-                        str(exc),
-                        "embed",
-                        run_id,
-                    )
-                    rejected += 1
-                logger.exception("Failed processing embedding batch")
-                if status == Status.FAILURE:
+                indexed += indexed_delta
+                rejected += rejected_delta
+                if batch_status != Status.SUCCESS:
+                    status = batch_status
+                batch_buffer.clear()
+                if should_stop:
+                    stop_processing = True
                     break
+
+        if not stop_processing and batch_buffer:
+            indexed_delta, rejected_delta, batch_status, should_stop = self._process_batch(
+                batch_buffer,
+                run_id,
+                logger,
+                indexed_so_far=indexed,
+            )
+            indexed += indexed_delta
+            rejected += rejected_delta
+            if batch_status != Status.SUCCESS:
+                status = batch_status
+            if should_stop:
+                status = Status.FAILURE
 
         summary = IndexingSummary(
             run_id=run_id,
