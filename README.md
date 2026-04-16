@@ -1,12 +1,15 @@
 # VectorOverflow
 
-Semantic search over Stack Overflow questions using local embeddings and Chroma.
+Production-oriented Stack Overflow RAG system with hybrid retrieval, re-ranking, and a Streamlit UI.
 
 ## Features
 
 - Index Stack Overflow question posts from a local SQL Server database (`StackOverflow2013` by default)
 - Optional legacy XML ingestion mode
-- Semantic query search with top-k results
+- Hybrid search: vector retrieval (Chroma) + lexical retrieval (BM25) with RRF fusion
+- Cross-encoder re-ranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
+- LLM query preprocessing (tag extraction + query rewrite) and grounded answer generation
+- Streamlit UI with source post and scoring details
 - Local Chroma persistence
 
 ## Requirements
@@ -41,10 +44,14 @@ Common DB settings:
 - `DB_QUERY` (default selects question posts from `Posts`)
 - `DB_LIMIT` (default: `10000`)
 
-Other settings:
+RAG settings:
 
 - `EMBEDDING_BACKEND` (`sentence_transformers` default, or `openai`)
 - `OPENAI_API_KEY` (required if `EMBEDDING_BACKEND=openai`)
+- `OPENAI_MODEL` (default: `gpt-4o`)
+- `RERANK_MODEL` (default: `cross-encoder/ms-marco-MiniLM-L-6-v2`)
+- `HYBRID_ALPHA` (default: `0.5`, vector-vs-lexical fusion weight)
+- `RRF_K` (default: `60`)
 - `CHROMA_PERSIST_DIR` (default: `./data/chroma`)
 
 ## Usage
@@ -72,6 +79,20 @@ python app.py index --from-xml tests/fixtures/posts.xml
 ```bash
 python app.py search "How can I sort a python list?"
 ```
+
+### Streamlit UI
+
+```bash
+streamlit run so_rag/app_ui.py
+```
+
+The UI runs the full pipeline:
+1. LLM preprocessing for technical tag extraction and query rewrite
+2. Hybrid retrieval (vector + BM25 with metadata tag filtering)
+3. Cross-encoder reranking of top candidates
+4. LLM answer generation grounded in retrieved Stack Overflow context
+
+If the LLM provider fails, the app falls back to returning top-ranked Stack Overflow links with a warning.
 
 ## Tests
 
