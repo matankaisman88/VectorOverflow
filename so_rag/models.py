@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def content_hash(title: str, body: str, tags: str) -> str:
+    payload = f"{title}\n{body}\n{tags}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class Status(str, Enum):
@@ -44,6 +50,7 @@ class SearchResult(BaseModel):
     tags: str
     score: float
     stackoverflow_url: str
+    body: str = ""
 
 
 class HybridSearchHit(BaseModel):
@@ -95,4 +102,6 @@ class IndexingSummary(BaseModel):
     total_rejected: int
     duration_seconds: float
     status: Status
+    max_id_seen: int | None = None
+    max_last_activity_date: datetime | None = None
 

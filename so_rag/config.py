@@ -30,12 +30,18 @@ class Settings(BaseSettings):
     db_port: int = 1433
     db_driver: str = "ODBC Driver 18 for SQL Server"
     db_query: str = (
-        "SELECT Id, Title, Body, Tags "
+        # Custom DB_QUERY overrides must also select LastActivityDate for incremental mode,
+        # otherwise ingestion falls back to ID-only watermarking.
+        "SELECT Id, Title, Body, Tags, LastActivityDate "
         "FROM Posts "
         "WHERE PostTypeId = 1 "
         "ORDER BY Id"
     )
     db_limit: int = 10000
+    db_connection_timeout: int = 60
+    db_query_timeout: int = 600
+    db_fetch_size: int = 500
+    watermark_path: Path = Path("./data/watermark.json")
     log_dir: Path = Path("./logs")
     dlq_path: Path = Path("./rejected_records.jsonl")
 

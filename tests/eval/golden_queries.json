@@ -1,0 +1,8 @@
+{
+  "_comment": "TODO: fill relevant_ids with real Post IDs from your indexed StackOverflow2013 data before running eval.",
+  "queries": [
+    {"query": "how to sort a list in python", "relevant_ids": []},
+    {"query": "difference between == and equals in java", "relevant_ids": []},
+    {"query": "how to reverse a string in javascript", "relevant_ids": []}
+  ]
+}

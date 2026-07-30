@@ -267,3 +267,32 @@ def test_rag_pipeline_threshold_removes_irrelevant_sources(tmp_path: Path, monke
     assert result.sources == []
     assert result.answer == "No relevant information found in the 2013 dataset."
 
+
+def test_content_hash_re_embeds_changed_body(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    patch_embedder(monkeypatch)
+    settings = build_settings(tmp_path)
+    logger = get_run_logger("run-reembed", settings.log_dir)
+    indexer = ChromaIndexer(settings)
+
+    embed_calls: list[int] = []
+
+    original_embed = indexer.embedding_service.embed_texts
+
+    def counting_embed(texts: list[str]) -> list[list[float]]:
+        embed_calls.append(len(texts))
+        return original_embed(texts)
+
+    monkeypatch.setattr(indexer.embedding_service, "embed_texts", counting_embed)
+
+    base_payload = fixture_payloads("tests/fixtures/posts.xml")[0]
+    indexer.index_payloads([base_payload], "run-1", logger)
+    assert sum(embed_calls) == 1
+
+    changed_payload = dict(base_payload)
+    changed_payload["Body"] = "<p>Updated body for re-embedding test.</p>"
+    indexer.index_payloads([changed_payload], "run-2", logger)
+    assert sum(embed_calls) == 2
+
+    indexer.index_payloads([changed_payload], "run-3", logger)
+    assert sum(embed_calls) == 2
+

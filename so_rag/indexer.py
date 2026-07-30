@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import chromadb
 from openai import OpenAI
@@ -10,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 from so_rag.config import Settings
 from so_rag.ingestion import parse_posts_xml, valid_post_from_payload, write_dlq_record
-from so_rag.models import IndexingSummary, Post, Status
+from so_rag.models import IndexingSummary, Post, Status, content_hash
 
 
 class EmbeddingService:
@@ -49,9 +50,27 @@ class ChromaIndexer:
     def _to_document(self, post: Post) -> str:
         return f"{post.title}\n{post.body}\n{post.tags}".strip()
 
-    def _chunks(self, posts: list[Post], size: int) -> Iterable[list[Post]]:
-        for i in range(0, len(posts), size):
-            yield posts[i : i + size]
+    @staticmethod
+    def _update_watermark_trackers(
+        payload: dict[str, Any],
+        max_id_seen: int | None,
+        max_last_activity_date: datetime | None,
+    ) -> tuple[int | None, datetime | None]:
+        post_id = payload.get("Id")
+        if post_id is not None:
+            post_id_int = int(post_id)
+            max_id_seen = post_id_int if max_id_seen is None else max(max_id_seen, post_id_int)
+
+        last_activity = payload.get("LastActivityDate")
+        if last_activity is not None:
+            if isinstance(last_activity, str):
+                last_activity = datetime.fromisoformat(last_activity)
+            if max_last_activity_date is None:
+                max_last_activity_date = last_activity
+            else:
+                max_last_activity_date = max(max_last_activity_date, last_activity)
+
+        return max_id_seen, max_last_activity_date
 
     def _process_batch(
         self,
@@ -60,32 +79,50 @@ class ChromaIndexer:
         logger,
         indexed_so_far: int,
     ) -> tuple[int, int, Status, bool]:
-        """
-        Process a single validated batch.
-
-        Returns:
-            indexed_delta, rejected_delta, status_after_batch, should_stop
-        """
+        """Returns indexed_delta, rejected_delta, status_after_batch, should_stop."""
         if not batch:
             return 0, 0, Status.SUCCESS, False
 
         ids = [str(p.id) for p in batch]
         try:
-            existing = self.collection.get(ids=ids, include=[])
-            existing_ids = set(existing.get("ids", []))
-            missing_posts = [p for p in batch if str(p.id) not in existing_ids]
-            if not missing_posts:
+            existing = self.collection.get(ids=ids, include=["metadatas"])
+            existing_by_id = {
+                eid: (meta or {}).get("content_hash")
+                for eid, meta in zip(existing.get("ids", []), existing.get("metadatas", []))
+            }
+
+            posts_to_upsert: list[Post] = []
+            for post in batch:
+                new_hash = content_hash(post.title, post.body, post.tags)
+                old_hash = existing_by_id.get(str(post.id))
+                if str(post.id) not in existing_by_id or old_hash is None or old_hash != new_hash:
+                    posts_to_upsert.append(post)
+
+            if not posts_to_upsert:
                 return 0, 0, Status.SUCCESS, False
 
-            docs = [self._to_document(p) for p in missing_posts]
+            docs = [self._to_document(p) for p in posts_to_upsert]
             embeddings = self.embedding_service.embed_texts(docs)
+
+            newly_indexed = sum(1 for p in posts_to_upsert if str(p.id) not in existing_by_id)
+            re_embedded = len(posts_to_upsert) - newly_indexed
+            logger.info("batch_result run_id=%s new=%s updated=%s", run_id, newly_indexed, re_embedded)
+
             self.collection.upsert(
-                ids=[str(p.id) for p in missing_posts],
+                ids=[str(p.id) for p in posts_to_upsert],
                 documents=docs,
                 embeddings=embeddings,
-                metadatas=[{"id": p.id, "title": p.title, "tags": p.tags} for p in missing_posts],
+                metadatas=[
+                    {
+                        "id": p.id,
+                        "title": p.title,
+                        "tags": p.tags,
+                        "content_hash": content_hash(p.title, p.body, p.tags),
+                    }
+                    for p in posts_to_upsert
+                ],
             )
-            return len(missing_posts), 0, Status.SUCCESS, False
+            return len(posts_to_upsert), 0, Status.SUCCESS, False
         except Exception as exc:
             status = Status.PARTIAL if indexed_so_far > 0 else Status.FAILURE
             for post in batch:
@@ -107,12 +144,17 @@ class ChromaIndexer:
         status = Status.SUCCESS
         batch_buffer: list[Post] = []
         stop_processing = False
+        max_id_seen: int | None = None
+        max_last_activity_date: datetime | None = None
 
         for payload in payloads:
             processed += 1
             if processed % 1000 == 0:
                 logger.info("indexing_progress run_id=%s processed=%s", run_id, processed)
 
+            max_id_seen, max_last_activity_date = self._update_watermark_trackers(
+                payload, max_id_seen, max_last_activity_date
+            )
             post = valid_post_from_payload(payload, run_id, self.settings.dlq_path)
             if post is None:
                 rejected += 1
@@ -156,10 +198,11 @@ class ChromaIndexer:
             total_rejected=rejected,
             duration_seconds=round(time.perf_counter() - start, 4),
             status=status,
+            max_id_seen=max_id_seen,
+            max_last_activity_date=max_last_activity_date,
         )
         logger.info("indexing_summary=%s", summary.model_dump_json())
         return summary
 
     def index_posts(self, input_xml: Path, run_id: str, logger) -> IndexingSummary:
         return self.index_payloads(parse_posts_xml(input_xml), run_id, logger)
-

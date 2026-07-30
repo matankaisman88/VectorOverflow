@@ -69,6 +69,31 @@ Limit DB rows:
 python app.py index --limit 1000
 ```
 
+Force a re-scan from the beginning with:
+
+```bash
+python app.py index --full
+```
+
+Index **all** question posts (runs in batches of `DB_LIMIT`, default 10,000, until done):
+
+```bash
+python app.py index --all --full
+```
+
+This can take a long time and use significant disk space for StackOverflow2013 (millions of posts).
+Resume a partial `--all` run without `--full`:
+
+```bash
+python app.py index --all
+```
+
+If you see `Communication link failure` or `Login timeout expired`:
+
+1. Run `python app.py db-check` — confirms SQL Server + `StackOverflow2013` are reachable.
+2. Start **SQL Server (MSSQLSERVER)** in `services.msc` (the default instance hosts this DB).
+3. Use `--all` instead of a very large single `--limit` (e.g. 50000).
+
 ### Legacy XML indexing
 
 ```bash
@@ -79,6 +104,20 @@ python app.py index --from-xml tests/fixtures/posts.xml
 
 ```bash
 python app.py search "How can I sort a python list?"
+python app.py search "how to" --top-k 101
+python app.py search "python" --json
+```
+
+Use `--json` when you need machine-readable output (one JSON object per line).
+
+### Retrieval evaluation
+
+Fill `relevant_ids` in `tests/eval/golden_queries.json` with real indexed post IDs,
+then run:
+
+```bash
+python app.py eval-retrieval
+python app.py eval-retrieval --k 10 --rerank
 ```
 
 ### Streamlit UI

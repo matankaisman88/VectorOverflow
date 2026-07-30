@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -9,6 +11,7 @@ from lxml import etree, html
 
 from so_rag.config import Settings
 from so_rag.models import DlqRecord, Post
+from so_rag.watermark import Watermark
 
 
 def clean_body_html(raw_body: str) -> str:
@@ -67,6 +70,7 @@ def _build_mssql_connection_string(settings: Settings) -> str:
         f"DRIVER={{{settings.db_driver}}}",
         f"SERVER={server}",
         f"DATABASE={settings.db_name}",
+        f"Connection Timeout={settings.db_connection_timeout}",
         "Encrypt=yes",
         "TrustServerCertificate=yes",
     ]
@@ -80,7 +84,85 @@ def _build_mssql_connection_string(settings: Settings) -> str:
     return ";".join(parts)
 
 
-def parse_posts_from_db(settings: Settings, limit: int | None = None) -> Iterator[dict[str, Any]]:
+def _inject_incremental_predicate(base_query: str, watermark: Watermark) -> str:
+    query = base_query.strip()
+    if not query.upper().startswith("SELECT"):
+        raise ValueError("DB_QUERY must start with SELECT")
+
+    predicate = "(Id > ? OR LastActivityDate > ?)"
+    upper = query.upper()
+    order_by_idx = upper.rfind(" ORDER BY ")
+    where_match = re.search(r"\bWHERE\b", query, re.IGNORECASE)
+
+    if order_by_idx != -1:
+        before_order = query[:order_by_idx].rstrip()
+        after_order = query[order_by_idx:]
+        if where_match and where_match.start() < order_by_idx:
+            return f"{before_order} AND {predicate} {after_order}"
+        return f"{before_order} WHERE {predicate} {after_order}"
+
+    if where_match:
+        return f"{query} AND {predicate}"
+
+    return f"{query} WHERE {predicate}"
+
+
+def _apply_top_limit(query: str, max_rows: int) -> str:
+    if max_rows <= 0:
+        return query
+    upper = query.upper()
+    if not upper.startswith("SELECT "):
+        raise ValueError("DB_QUERY must start with SELECT")
+    return query.replace("SELECT ", f"SELECT TOP {max_rows} ", 1)
+
+
+def _connect_mssql(settings: Settings, pyodbc: Any, attempts: int = 3):  # noqa: ANN001
+    last_exc: Exception | None = None
+    conn_string = _build_mssql_connection_string(settings)
+    for attempt in range(attempts):
+        try:
+            return pyodbc.connect(conn_string, timeout=settings.db_connection_timeout)
+        except pyodbc.Error as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(2**attempt)
+    assert last_exc is not None
+    hint = (
+        f"Could not connect to SQL Server at {settings.db_server!r} "
+        f"(database={settings.db_name!r}). "
+        "StackOverflow2013 is usually on the default instance (MSSQLSERVER). "
+        "Open services.msc and start 'SQL Server (MSSQLSERVER)', then run: python app.py db-check"
+    )
+    raise RuntimeError(f"{last_exc}\n\n{hint}") from last_exc
+
+
+def check_db_connection(settings: Settings) -> dict[str, Any]:
+    import pyodbc  # type: ignore
+
+    conn = _connect_mssql(settings, pyodbc, attempts=1)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DB_NAME(), @@SERVERNAME")
+        db_name, server_name = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) FROM Posts WHERE PostTypeId = 1")
+        question_posts = int(cursor.fetchone()[0])
+        return {
+            "ok": True,
+            "server": str(server_name),
+            "database": str(db_name),
+            "question_posts": question_posts,
+            "db_server_setting": settings.db_server,
+        }
+    finally:
+        conn.close()
+
+
+def parse_posts_from_db(
+    settings: Settings,
+    limit: int | None = None,
+    *,
+    watermark: Watermark | None = None,
+) -> Iterator[dict[str, Any]]:
     try:
         import pyodbc  # type: ignore
     except Exception as exc:  # pragma: no cover - environment dependent
@@ -88,27 +170,37 @@ def parse_posts_from_db(settings: Settings, limit: int | None = None) -> Iterato
 
     query = settings.db_query.strip()
     max_rows = limit if limit is not None else settings.db_limit
-    if max_rows > 0:
-        upper = query.upper()
-        if upper.startswith("SELECT "):
-            query = query.replace("SELECT ", f"SELECT TOP {max_rows} ", 1)
-        else:
-            raise ValueError("DB_QUERY must start with SELECT")
+    params: tuple[Any, ...] | None = None
 
-    conn = pyodbc.connect(_build_mssql_connection_string(settings), timeout=30)
+    if watermark is not None and watermark.last_id > 0:
+        query = _inject_incremental_predicate(query, watermark)
+        last_activity = watermark.last_activity_date or datetime(1900, 1, 1, tzinfo=timezone.utc)
+        params = (watermark.last_id, last_activity)
+
+    query = _apply_top_limit(query, max_rows)
+
+    conn = _connect_mssql(settings, pyodbc)
     try:
+        conn.timeout = settings.db_query_timeout
         cursor = conn.cursor()
-        cursor.execute(query)
+        if params is not None:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
         columns = [desc[0] for desc in cursor.description]
-        for row in cursor.fetchall():
-            payload = dict(zip(columns, row))
-            # Keep parity with XML payload key casing expected downstream.
-            yield {
-                "Id": payload.get("Id"),
-                "Title": payload.get("Title"),
-                "Body": payload.get("Body"),
-                "Tags": payload.get("Tags") or "",
-            }
+        while True:
+            rows = cursor.fetchmany(settings.db_fetch_size)
+            if not rows:
+                break
+            for row in rows:
+                payload = dict(zip(columns, row))
+                yield {
+                    "Id": payload.get("Id"),
+                    "Title": payload.get("Title"),
+                    "Body": payload.get("Body"),
+                    "Tags": payload.get("Tags") or "",
+                    "LastActivityDate": payload.get("LastActivityDate"),
+                }
     finally:
         conn.close()
 
