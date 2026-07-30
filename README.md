@@ -125,8 +125,10 @@ python app.py eval-retrieval --k 10 --rerank
 ### Streamlit UI
 
 ```bash
-streamlit run so_rag/app_ui.py
+streamlit run app_ui.py
 ```
+
+Run from the repo root (same directory as `app.py`). Do not use `so_rag/app_ui.py` directly — Streamlit adds that folder to `sys.path` and `import so_rag` fails.
 
 The UI runs the full pipeline:
 1. LLM preprocessing for technical tag extraction and query rewrite
