@@ -34,6 +34,12 @@ pip install -e ".[dev]"
 
 Settings are loaded from environment variables or `.env` (via `pydantic-settings`).
 
+```bash
+copy .env.example .env
+```
+
+Then set `OPENAI_API_KEY` in `.env` for the Streamlit UI and `ask` command. Indexing works locally with the default `EMBEDDING_BACKEND=sentence_transformers`.
+
 Common DB settings:
 
 - `DB_SERVER` (default: `localhost`)
@@ -47,7 +53,7 @@ Common DB settings:
 RAG settings:
 
 - `EMBEDDING_BACKEND` (`sentence_transformers` default, or `openai`)
-- `OPENAI_API_KEY` (required if `EMBEDDING_BACKEND=openai`)
+- `OPENAI_API_KEY` (required for Streamlit UI / `ask`; also required if `EMBEDDING_BACKEND=openai`)
 - `OPENAI_MODEL` (default: `gpt-4o`)
 - `RERANK_MODEL` (default: `cross-encoder/ms-marco-MiniLM-L-6-v2`)
 - `RERANK_THRESHOLD` (default: `-2.0`; sources at or below this rerank score are dropped)
