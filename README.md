@@ -136,13 +136,17 @@ streamlit run app_ui.py
 
 Run from the repo root (same directory as `app.py`). Do not use `so_rag/app_ui.py` directly — Streamlit adds that folder to `sys.path` and `import so_rag` fails.
 
-The UI runs the full pipeline:
+The UI has two modes:
+
+**Ask (RAG)** — full pipeline:
 1. LLM preprocessing for technical tag extraction and query rewrite
 2. Hybrid retrieval (vector + BM25 with metadata tag filtering)
 3. Cross-encoder reranking of top candidates
 4. LLM answer generation grounded in retrieved Stack Overflow context
 
-If the LLM provider fails, the app falls back to returning top-ranked Stack Overflow links with a warning.
+**Search** — hybrid vector + BM25 browse mode (no LLM). Use the **Top K** slider (10–200, default 50) to see more ranked posts from the indexed corpus. Results are still capped by Top K, not the entire database.
+
+If the LLM provider fails in Ask mode, the app falls back to returning top-ranked Stack Overflow links with a warning.
 
 ## Tests
 
