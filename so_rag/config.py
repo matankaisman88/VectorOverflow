@@ -20,7 +20,18 @@ class Settings(BaseSettings):
     sentence_transformer_model: str = "all-MiniLM-L6-v2"
     chroma_persist_dir: Path = Path("./data/chroma")
     chroma_collection_prefix: str = "posts"
-    batch_size: int = 100
+    # Posts grouped per Chroma get()/upsert() round-trip. Larger = fewer round-trips,
+    # more memory held at once (documents + embeddings for the whole batch).
+    batch_size: int = 500
+    # Texts grouped per embedding backend call. Independent from batch_size:
+    # - sentence_transformers: passed as encode(..., batch_size=...) — controls the
+    #   actual forward-pass chunk size on CPU/GPU. Raise this toward your GPU's
+    #   memory ceiling for throughput; on CPU there's usually little benefit past 64.
+    # - openai: caps how many texts go into a single embeddings.create() call, since
+    #   the OpenAI embeddings API has request size/token limits. embed_texts() must
+    #   internally split `texts` into chunks of this size regardless of how large
+    #   the input list is.
+    embedding_encode_batch_size: int = 64
     db_type: Literal["mssql"] = "mssql"
     db_server: str = "localhost"
     db_name: str = "StackOverflow2013"

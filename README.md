@@ -54,6 +54,8 @@ RAG settings:
 - `HYBRID_ALPHA` (default: `0.5`, vector-vs-lexical fusion weight)
 - `RRF_K` (default: `60`)
 - `CHROMA_PERSIST_DIR` (default: `./data/chroma`)
+- `BATCH_SIZE` (default: `500`) — posts per Chroma `get()`/`upsert()` round-trip; raise to reduce Chroma I/O, but uses more RAM per batch.
+- `EMBEDDING_ENCODE_BATCH_SIZE` (default: `64`) — texts per embedding backend call; caps OpenAI request size and sets sentence-transformers forward-pass chunk size independently of `BATCH_SIZE`.
 
 ## Usage
 

@@ -32,7 +32,7 @@ class FakeSentenceTransformer:
     def __init__(self, _model_name: str):
         pass
 
-    def encode(self, texts, convert_to_numpy=True):  # noqa: ANN001
+    def encode(self, texts, convert_to_numpy=True, batch_size=32):  # noqa: ANN001
         vectors = []
         for text in texts:
             lower = text.lower()

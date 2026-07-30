@@ -27,16 +27,27 @@ class EmbeddingService:
             self._st_model = SentenceTransformer(settings.sentence_transformer_model)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        chunk_size = max(1, self.settings.embedding_encode_batch_size)
+
         if self.settings.embedding_backend == "openai":
             assert self._openai_client is not None
-            response = self._openai_client.embeddings.create(
-                model=self.settings.openai_embedding_model,
-                input=texts,
-            )
-            return [item.embedding for item in response.data]
+            embeddings: list[list[float]] = []
+            for i in range(0, len(texts), chunk_size):
+                chunk = texts[i : i + chunk_size]
+                response = self._openai_client.embeddings.create(
+                    model=self.settings.openai_embedding_model,
+                    input=chunk,
+                )
+                embeddings.extend(item.embedding for item in response.data)
+            return embeddings
+
         assert self._st_model is not None
-        embeddings = self._st_model.encode(texts, convert_to_numpy=True)
-        return [vector.tolist() for vector in embeddings]
+        embeddings_np = self._st_model.encode(
+            texts,
+            batch_size=chunk_size,
+            convert_to_numpy=True,
+        )
+        return [vector.tolist() for vector in embeddings_np]
 
 
 class ChromaIndexer:
